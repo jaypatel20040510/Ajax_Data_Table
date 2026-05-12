@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>User Data Table</title>
+    <meta name="description" content="AJAX-powered user data table with search, sort, and pagination backed by PHP session caching." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+
+    <style>
+        /* ── Reset & tokens ─────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg        : #0f1117;
+            --surface   : #1a1d27;
+            --surface2  : #22263a;
+            --border    : #2e3251;
+            --accent    : #6c63ff;
+            --accent2   : #a78bfa;
+            --danger    : #f87171;
+            --text      : #e2e8f0;
+            --text-muted: #8892a4;
+            --radius    : 12px;
+            --shadow    : 0 8px 32px rgba(0,0,0,0.45);
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        /* ── Page wrapper ──────────────────────────────── */
+        .page-wrapper {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+
+        /* ── Header ────────────────────────────────────── */
+        .page-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 28px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .page-header h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #6c63ff, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .page-header h1 span {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 400;
+            -webkit-text-fill-color: var(--text-muted);
+            background: none;
+            margin-top: 2px;
+        }
+
+        /* ── Card ──────────────────────────────────────── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        /* ── Toolbar ───────────────────────────────────── */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 18px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface2);
+        }
+
+        .search-wrap {
+            position: relative;
+            flex: 1;
+            min-width: 200px;
+            max-width: 400px;
+        }
+
+        .search-wrap svg {
+            position: absolute;
+            top: 50%;
+            left: 14px;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            pointer-events: none;
+        }
+
+        #searchInput {
+            width: 100%;
+            padding: 10px 14px 10px 40px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 0.9rem;
+            font-family: inherit;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+        }
+        #searchInput::placeholder { color: var(--text-muted); }
+        #searchInput:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(108,99,255,0.2);
+        }
+
+        .toolbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .limit-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        #limitSelect {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            padding: 6px 10px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            outline: none;
+            cursor: pointer;
+        }
+        #limitSelect:focus { border-color: var(--accent); }
+
+        /* Cache clear button */
+        #clearCacheBtn {
+            padding: 7px 14px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: border-color 0.2s, color 0.2s;
+            white-space: nowrap;
+        }
+        #clearCacheBtn:hover { border-color: var(--danger); color: var(--danger); }
+
+        /* ── Table ─────────────────────────────────────── */
+        .table-scroll { overflow-x: auto; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        thead tr {
+            background: linear-gradient(90deg, #2a2060, #1e2a5e);
+            border-bottom: 2px solid var(--accent);
+        }
+
+        th {
+            padding: 14px 16px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #c4b5fd;
+            white-space: nowrap;
+        }
+
+        th[data-col] {
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.15s, color 0.15s;
+        }
+        th[data-col]:hover    { background: rgba(108,99,255,0.15); color: #fff; }
+        th[data-col].active-col { color: #fff; }
+
+        .sort-icon { font-style: normal; font-size: 0.75rem; opacity: 0.7; }
+
+        tbody tr {
+            border-bottom: 1px solid var(--border);
+            transition: background 0.12s;
+        }
+        tbody tr:hover { background: rgba(108,99,255,0.07); }
+        tbody tr:last-child { border-bottom: none; }
+
+        td { padding: 13px 16px; color: var(--text); }
+        td:first-child { color: var(--text-muted); font-size: 0.82rem; }
+
+        /* Special states */
+        .loading-cell, .empty-cell, .error-cell {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-muted);
+        }
+        .error-cell { color: var(--danger); }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px; height: 16px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Footer ────────────────────────────────────── */
+        .table-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
+            background: var(--surface2);
+        }
+
+        #resultInfo {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+
+        /* ── Pagination ─────────────────────────────────── */
+        #paginationContainer {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .page-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text);
+            font-size: 0.82rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+            outline: none;
+        }
+        .page-btn:hover:not(.disabled):not(.active) {
+            background: rgba(108,99,255,0.15);
+            border-color: var(--accent);
+            color: var(--accent2);
+        }
+        .page-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            font-weight: 600;
+        }
+        .page-btn.disabled { opacity: 0.35; cursor: not-allowed; }
+
+        .page-ellipsis {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            padding: 0 4px;
+        }
+
+        /* ── Cache badge ─────────────────────────────────── */
+        .cache-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            background: rgba(108,99,255,0.15);
+            border: 1px solid rgba(108,99,255,0.3);
+            border-radius: 20px;
+            font-size: 0.72rem;
+            color: var(--accent2);
+            font-weight: 500;
+        }
+        .cache-badge .dot {
+            width: 6px; height: 6px;
+            background: var(--accent2);
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50%       { opacity: 0.3; }
+        }
+    </style>
+</head>
+
+<body>
+<div class="page-wrapper">
+
+    <!-- ── Header ── -->
+    <div class="page-header">
+        <h1>
+            User Data Table
+            <span>Session-cached · Search · Sort · Paginate</span>
+        </h1>
+        <div class="cache-badge">
+            <span class="dot"></span>
+            Session Cache Active
+        </div>
+    </div>
+
+    <!-- ── Card ── -->
+    <div class="card">
+
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <div class="search-wrap">
+                <!-- Search icon -->
+                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"
+                     viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input type="text" id="searchInput"
+                       placeholder="Search by firstname, lastname or email…"
+                       autocomplete="off" />
+            </div>
+
+            <div class="toolbar-right">
+                <div class="limit-wrap">
+                    <label for="limitSelect">Rows:</label>
+                    <select id="limitSelect">
+                        <option value="10" selected>10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <button id="clearCacheBtn" title="Clear session cache and re-fetch from DB">
+                    ↺ Clear Cache
+                </button>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="table-scroll">
+            <table id="userTable">
+                <thead>
+                    <tr>
+                        <th data-col="id">
+                            ID <span class="sort-icon"> ▲</span>
+                        </th>
+                        <th data-col="firstname">
+                            Firstname <span class="sort-icon"> ⇅</span>
+                        </th>
+                        <th data-col="lastname">
+                            Lastname <span class="sort-icon"> ⇅</span>
+                        </th>
+                        <th data-col="email">
+                            Email <span class="sort-icon"> ⇅</span>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <tr>
+                        <td colspan="4" class="loading-cell">
+                            <span class="spinner"></span> Loading…
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Footer: info + pagination -->
+        <div class="table-footer">
+            <div id="resultInfo"></div>
+            <div id="paginationContainer"></div>
+        </div>
+
+    </div>
+</div>
+
+<script src="./ajax_tabel.js"></script>
+</body>
+</html>
