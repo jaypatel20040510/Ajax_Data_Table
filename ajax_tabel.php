@@ -7,98 +7,111 @@ require 'success_error.php';
 
 // ─── Cache busting ────────────────────────────────────────────────────────────
 if (isset($_GET['action']) && $_GET['action'] === 'clear_cache') {
-    unset($_SESSION['users_cache']);
-    echo json_encode(['success' => true, 'message' => 'Session cache cleared. Next request will re-fetch from DB.']);
+    unset($_SESSION['users_cache'], $_SESSION['users_params']);
+    echo successResponse('Session cache cleared. Next request will re-fetch from DB.', null, 200);
     exit;
 }
 
-// ─── Load all data (ONE DB query, then cache in session) ──────────────────────
-if (empty($_SESSION['users_cache'])) {
-    $query = "
-    SELECT 
-        id, firstname, lastname, email,
-        COUNT(*) OVER() AS total_count
-    FROM users
-    WHERE firstname LIKE CONCAT('%', ?, '%')
-       OR lastname  LIKE CONCAT('%', ?, '%')
-       OR email     LIKE CONCAT('%', ?, '%')
-    ORDER BY $sort_by $order
-    LIMIT ? OFFSET ?
-";
-    // This is the ONLY DB query in the entire application.
-    // SQL_CALC_FOUND_ROWS is not needed here because we store everything in session
-    // and do count/filter/sort/paginate in PHP — truly one query only.
-    // $result = mysqli_query($conn, "SELECT id, firstname, lastname, email FROM users");
-    $result = mysqli_query($conn, $query);
-
-
-    if (!$result) {
-        echo json_encode(['error' => 'Query failed: ' . mysqli_error($conn)]);
-        exit;
-    }
-
-    $_SESSION['users_cache'] = mysqli_fetch_all($result, MYSQLI_ASSOC);
-    mysqli_free_result($result);
-}
-
-// Retrieve the cached full dataset
-$all_users = $_SESSION['users_cache'];
-
-// ─── Read request parameters ──────────────────────────────────────────────────
-$search = trim($_GET['search'] ?? '');
+// ─── Read & normalise request parameters ─────────────────────────────────────
+$search = trim(htmlspecialchars($_GET['search'] ?? ''));
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $limit = max(1, (int) ($_GET['limit'] ?? 10));
 
 $allowed_cols = ['id', 'firstname', 'lastname', 'email'];
-$sort_by = in_array($_GET['sort_by'] ?? '', $allowed_cols) ? $_GET['sort_by'] : 'id';
-$order = (strtoupper($_GET['order'] ?? '') === 'DESC') ? 'DESC' : 'ASC';
+$sort_by = in_array(htmlspecialchars($_GET['sort_by'] ?? ''), $allowed_cols) ? $_GET['sort_by'] : 'id';
+$order = (strtoupper(htmlspecialchars($_GET['order'] ?? '')) === 'DESC') ? 'DESC' : 'ASC';
 
-// ─── Step 1: Filter (search) ──────────────────────────────────────────────────
-if ($search !== '') {
-    $search_lower = strtolower($search);
-    $all_users = array_values(array_filter($all_users, function ($row) use ($search_lower) {
-        return str_contains(strtolower($row['firstname']), $search_lower)
-            || str_contains(strtolower($row['lastname']), $search_lower)
-            || str_contains(strtolower($row['email']), $search_lower);
-    }));
+// Bundle current params so we can compare them to the previous request
+$current_params = [
+    'search' => $search,
+    'page' => $page,
+    'limit' => $limit,
+    'sort_by' => $sort_by,
+    'order' => $order,
+];
+
+// ─── Decide whether to use the cache or hit the DB ────────────────────────────
+// Re-query ONLY when:
+//   • No cache exists yet, OR
+//   • Any param differs from the previous request's params
+$params_changed = ($_SESSION['users_params'] ?? null) !== $current_params;
+
+if ($params_changed || empty($_SESSION['users_cache'])) {
+
+    // Build the query — sort column is safe (validated against $allowed_cols above)
+    $query = "
+        SELECT id, firstname, lastname, email
+        FROM users
+        WHERE firstname LIKE CONCAT('%', ?, '%')
+           OR lastname  LIKE CONCAT('%', ?, '%')
+           OR email     LIKE CONCAT('%', ?, '%')
+        ORDER BY {$sort_by} {$order}
+        LIMIT ? OFFSET ?
+    ";
+
+    $offset = ($page - 1) * $limit;
+
+    $stmt = mysqli_prepare($conn, $query);
+    if (!$stmt) {
+        errorResponse('Prepare failed: ' . mysqli_error($conn), [], 500);
+        exit;
+    }
+
+    // Bind: three search strings + limit + offset
+    mysqli_stmt_bind_param($stmt, 'sssii', $search, $search, $search, $limit, $offset);
+    mysqli_stmt_execute($stmt);
+    $result = mysqli_stmt_get_result($stmt);
+
+    if (!$result) {
+        errorResponse('Query failed: ' . mysqli_error($conn), [], 500);
+        exit;
+    }
+
+    $_SESSION['users_cache'] = mysqli_fetch_all($result, MYSQLI_ASSOC);
+    $_SESSION['users_params'] = $current_params;   // remember what we queried for
+
+    mysqli_free_result($result);
+    mysqli_stmt_close($stmt);
+
+    $from_cache = false;
+} else {
+    $from_cache = true;
 }
 
-// ─── Step 2: Total count (no extra DB query — just count the filtered array) ──
-$total = count($all_users);
+// ─── Use the cached page data ─────────────────────────────────────────────────
+$page_data = $_SESSION['users_cache'];
 
-// ─── Step 3: Sort ─────────────────────────────────────────────────────────────
-usort($all_users, function ($a, $b) use ($sort_by, $order) {
-    $valA = strtolower((string) $a[$sort_by]);
-    $valB = strtolower((string) $b[$sort_by]);
+// We get the total count with a separate lightweight COUNT query so the
+// paginator is always accurate regardless of LIMIT/OFFSET.
+// (Only run when params changed — same cache guard as above.)
 
-    $cmp = ($sort_by === 'id')
-        ? ((int) $a[$sort_by] <=> (int) $b[$sort_by])   // numeric compare for id
-        : strcmp($valA, $valB);                         // string compare for text cols
+if ($params_changed || !isset($_SESSION['users_total'])) {
+    $count_query = "
+        SELECT COUNT(*) AS total
+        FROM users
+        WHERE firstname LIKE CONCAT('%', ?, '%')
+           OR lastname  LIKE CONCAT('%', ?, '%')
+           OR email     LIKE CONCAT('%', ?, '%')
+    ";
 
-    return ($order === 'DESC') ? -$cmp : $cmp;
-});
+    $stmt_count = mysqli_prepare($conn, $count_query);
+    mysqli_stmt_bind_param($stmt_count, 'sss', $search, $search, $search);
+    mysqli_stmt_execute($stmt_count);
+    $count_result = mysqli_stmt_get_result($stmt_count);
+    $total = (int) mysqli_fetch_assoc($count_result)['total'];
+    mysqli_free_result($count_result);
+    mysqli_stmt_close($stmt_count);
 
-// ─── Step 4: Paginate ─────────────────────────────────────────────────────────
+    $_SESSION['users_total'] = $total;
+} else {
+    $total = $_SESSION['users_total'];
+}
+
+// ─── Pagination meta ──────────────────────────────────────────────────────────
 $total_pages = (int) ceil($total / $limit);
-$page = min($page, max(1, $total_pages)); // clamp page to valid range
-$offset = ($page - 1) * $limit;
-$page_data = array_slice($all_users, $offset, $limit);
+$page = min($page, max(1, $total_pages)); // clamp to valid range
 
-// ─── Step 5: Return JSON response ─────────────────────────────────────────────
-// echo json_encode([
-//     'success' => true,
-//     'total' => $total,
-//     'total_pages' => $total_pages,
-//     'page' => $page,
-//     'limit' => $limit,
-//     'sort_by' => $sort_by,
-//     'order' => $order,
-//     'search' => $search,
-//     'from_cache' => true,   // always true after first load; useful for debugging
-//     'data' => $page_data,
-// ]);
-
-// Success Response Function
+// ─── Return JSON response ─────────────────────────────────────────────────────
 echo successResponse("Users fetched", $page_data, 200, [
     'total' => $total,
     'total_pages' => $total_pages,
@@ -107,6 +120,6 @@ echo successResponse("Users fetched", $page_data, 200, [
     'sort_by' => $sort_by,
     'order' => $order,
     'search' => $search,
-    'from_cache' => true,
+    'from_cache' => $from_cache,
 ]);
 ?>

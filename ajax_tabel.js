@@ -36,6 +36,7 @@ function loadTable() {
         url: 'ajax_tabel.php',
         data: params.toString(),
         dataType: 'json',
+        // cache: true,
         success: function (res) {
             console.log("Response from ajax", res);
 
@@ -169,7 +170,7 @@ $(document).ready(function () {
             state.search = $('#searchInput').val().trim();
             state.page = 1;   // reset to first page on new search
             loadTable();
-        }, 350);
+        }, 500);
     });
 
     // Per-page selector
