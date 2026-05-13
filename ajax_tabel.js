@@ -36,7 +36,7 @@ function loadTable() {
         url: 'ajax_tabel.php',
         data: params.toString(),
         dataType: 'json',
-        // cache: true,
+        cache: true,
         success: function (res) {
             console.log("Response from ajax", res);
 
